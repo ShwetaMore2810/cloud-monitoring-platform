@@ -1,3 +1,5 @@
+// backend/server.js
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -8,23 +10,33 @@ const crypto = require('crypto');
 const { Client } = require('ssh2');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+app.use(cors({
+  origin: FRONTEND_ORIGIN
+}));
 app.use(express.json());
+
+// Mount auth routes
+const authRouter = require('./routes/auth');
+app.use('/api/auth', authRouter);
+
+// Authentication middleware (optional protection of routes)
+const authenticate = require('./middleware/authenticate');
 
 // Configure multer for file uploads
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
       const uploadDir = path.join(os.tmpdir(), 'server-metrics-pemfiles');
-      
+
       // Create directory if it doesn't exist
       if (!fs.existsSync(uploadDir)) {
         fs.mkdirSync(uploadDir, { recursive: true });
       }
-      
+
       cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
@@ -36,28 +48,29 @@ const upload = multer({
 });
 
 // Endpoint to fetch server metrics
-app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
+// If you want the route public, remove `authenticate` below.
+app.post('/api/fetch-metrics', authenticate, upload.single('pemFile'), async (req, res) => {
   console.log('Received request to fetch metrics');
   const { serverIp, username } = req.body;
-  
+
   if (!serverIp) {
     console.error('Missing server IP');
     return res.status(400).json({ error: 'Server IP is required' });
   }
-  
+
   if (!username) {
     console.error('Missing username');
     return res.status(400).json({ error: 'Username is required' });
   }
-  
+
   if (!req.file) {
     console.error('Missing PEM file');
     return res.status(400).json({ error: 'PEM file is required' });
   }
-  
+
   const pemFilePath = req.file.path;
   console.log(`PEM file saved at ${pemFilePath}`);
-  
+
   // Set correct permissions for the PEM file
   try {
     fs.chmodSync(pemFilePath, 0o600);
@@ -66,30 +79,30 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
     console.error('Error setting PEM file permissions:', err);
     return res.status(500).json({ error: 'Failed to set permissions on PEM file' });
   }
-  
+
   // Create SSH connection
   const conn = new Client();
-  
+
   // Timeout for connection attempts (15 seconds)
   const connectionTimeout = setTimeout(() => {
     conn.end();
-    fs.unlinkSync(pemFilePath);
+    try { fs.unlinkSync(pemFilePath); } catch (e) {}
     return res.status(504).json({ error: 'Connection timeout. Please check your server IP and ensure port 22 is open in your security group.' });
   }, 15000);
-  
+
   conn.on('error', (err) => {
     console.error('SSH connection error:', err);
     clearTimeout(connectionTimeout);
-    
+
     // Clean up the temporary file
     try {
       fs.unlinkSync(pemFilePath);
     } catch (e) {
       console.error('Error removing temp file:', e);
     }
-    
-    return res.status(500).json({ 
-      error: 'SSH connection error', 
+
+    return res.status(500).json({
+      error: 'SSH connection error',
       details: err.message,
       suggestions: [
         "Ensure your EC2 instance's security group allows SSH (port 22) connections",
@@ -99,16 +112,16 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
       ]
     });
   });
-  
+
   conn.on('ready', () => {
     console.log('SSH connection established');
     clearTimeout(connectionTimeout);
-    
+
     const metrics = {};
     let completedCommands = 0;
     let commandErrors = 0;
     const totalCommands = 4;
-    
+
     // Function to execute SSH commands and collect metrics
     const executeCommand = (command, metricKey, parser) => {
       console.log(`Executing command: ${command}`);
@@ -120,22 +133,22 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
           checkCompletion();
           return;
         }
-        
+
         let output = '';
         let errorOutput = '';
-        
+
         stream.on('data', (data) => {
           output += data.toString();
         });
-        
+
         stream.stderr.on('data', (data) => {
           errorOutput += data.toString();
           console.error(`stderr for ${command}:`, data.toString());
         });
-        
+
         stream.on('close', (code) => {
           console.log(`Command ${command} completed with code ${code}`);
-          
+
           if (code !== 0) {
             console.error(`Command failed with code ${code}:`, errorOutput);
             metrics[metricKey] = { error: errorOutput || `Command exited with code ${code}` };
@@ -150,21 +163,21 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
               commandErrors++;
             }
           }
-          
+
           checkCompletion();
         });
       });
     };
-    
+
     // Function to check if all commands have completed
     const checkCompletion = () => {
       completedCommands++;
       console.log(`Command completed: ${completedCommands}/${totalCommands}`);
-      
+
       if (completedCommands === totalCommands) {
         conn.end();
         console.log('All commands completed, closing connection');
-        
+
         // Clean up the temporary file
         try {
           fs.unlinkSync(pemFilePath);
@@ -172,10 +185,10 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
         } catch (e) {
           console.error('Error removing temp file:', e);
         }
-        
+
         if (commandErrors === totalCommands) {
-          return res.status(500).json({ 
-            error: 'Failed to execute commands on the server', 
+          return res.status(500).json({
+            error: 'Failed to execute commands on the server',
             metrics,
             suggestions: [
               "The user account may not have sufficient permissions",
@@ -184,17 +197,17 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
             ]
           });
         }
-        
+
         res.json({ metrics });
       }
     };
-    
+
     // Collect CPU metrics - using a more compatible command
     executeCommand("top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'", 'cpu', (output) => {
       const usage = parseFloat(output);
       return { usage: isNaN(usage) ? 0 : usage };
     });
-    
+
     // Collect memory metrics - more compatible version
     executeCommand("free | grep -i mem | awk '{print $2,$3,$4,$3*100/$2}'", 'memory', (output) => {
       const parts = output.trim().split(/\s+/);
@@ -202,7 +215,7 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
       const used = parseInt(parts[1]);
       const free = parseInt(parts[2]);
       const usagePercent = parseFloat(parts[3]);
-      
+
       return {
         total: Math.round(total / 1024), // Convert to MB
         used: Math.round(used / 1024),   // Convert to MB
@@ -210,7 +223,7 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
         usagePercent: Math.round(usagePercent * 100) / 100
       };
     });
-    
+
     // Collect disk usage - more compatible version
     executeCommand("df -h / | tail -n 1 | awk '{print $1,$2,$3,$4,$5,$6}'", 'disk', (output) => {
       const parts = output.split(/\s+/);
@@ -223,7 +236,7 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
         mountPoint: parts[5]
       };
     });
-    
+
     // Collect system load - more compatible version
     executeCommand("uptime | awk -F'[:,]' '{ print $4, $5, $6}'", 'load', (output) => {
       const loads = output.trim().split(/\s+/).map(parseFloat);
@@ -234,13 +247,13 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
       };
     });
   });
-  
+
   // Connect to the server with better error handling
   try {
     console.log(`Attempting to connect to ${serverIp} as ${username}`);
-    
+
     const privateKey = fs.readFileSync(pemFilePath);
-    
+
     conn.connect({
       host: serverIp,
       port: 22,
@@ -252,17 +265,17 @@ app.post('/api/fetch-metrics', upload.single('pemFile'), async (req, res) => {
   } catch (err) {
     console.error('Error initiating SSH connection:', err);
     clearTimeout(connectionTimeout);
-    
+
     // Clean up the temporary file
     try {
       fs.unlinkSync(pemFilePath);
     } catch (e) {
       console.error('Error removing temp file:', e);
     }
-    
-    return res.status(500).json({ 
-      error: 'Failed to initiate SSH connection', 
-      details: err.message 
+
+    return res.status(500).json({
+      error: 'Failed to initiate SSH connection',
+      details: err.message
     });
   }
 });
