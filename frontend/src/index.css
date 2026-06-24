@@ -1,1 +1,10 @@
 @import "tailwindcss";
+/* frontend/src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* optional: simple body background so components appear as expected */
+body {
+  background-color: #000; /* matches the component styles in Homepage */
+}

@@ -1,9 +1,11 @@
+// frontend/src/main.jsx
+import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
-import HomePage from './pages/Homepage.jsx';
+import App from './App.jsx';
 
 createRoot(document.getElementById('root')).render(
-  <>
-    <HomePage/>
-  </>
-)
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
