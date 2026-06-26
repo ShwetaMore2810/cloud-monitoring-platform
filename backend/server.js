@@ -9,6 +9,8 @@ const os = require('os');
 const crypto = require('crypto');
 const { Client } = require('ssh2');
 
+const db = require('./db'); 
+const authenticate = require('./middleware/authenticate');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -22,9 +24,10 @@ app.use(express.json());
 // Mount auth routes
 const authRouter = require('./routes/auth');
 app.use('/api/auth', authRouter);
-
-// Authentication middleware (optional protection of routes)
-const authenticate = require('./middleware/authenticate');
+const serversRouter = require('./routes/servers');
+const metricsRouter = require('./routes/metrics');
+app.use('/api/servers', authenticate, serversRouter);   // all /api/servers routes require auth
+app.use('/api/metrics', authenticate, metricsRouter);   // metrics history requires auth
 
 // Configure multer for file uploads
 const upload = multer({
@@ -170,39 +173,152 @@ app.post('/api/fetch-metrics', authenticate, upload.single('pemFile'), async (re
     };
 
     // Function to check if all commands have completed
-    const checkCompletion = () => {
-      completedCommands++;
-      console.log(`Command completed: ${completedCommands}/${totalCommands}`);
+//     const checkCompletion = () => {
+//       completedCommands++;
+//       console.log(`Command completed: ${completedCommands}/${totalCommands}`);
 
-      if (completedCommands === totalCommands) {
-        conn.end();
-        console.log('All commands completed, closing connection');
+//       if (completedCommands === totalCommands) {
+//         conn.end();
+//         console.log('All commands completed, closing connection');
 
-        // Clean up the temporary file
-        try {
-          fs.unlinkSync(pemFilePath);
-          console.log('Temporary PEM file removed');
-        } catch (e) {
-          console.error('Error removing temp file:', e);
-        }
+//         // Clean up the temporary file
+//         try {
+//           fs.unlinkSync(pemFilePath);
+//           console.log('Temporary PEM file removed');
+//         } catch (e) {
+//           console.error('Error removing temp file:', e);
+//         }
 
-        if (commandErrors === totalCommands) {
-          return res.status(500).json({
-            error: 'Failed to execute commands on the server',
-            metrics,
-            suggestions: [
-              "The user account may not have sufficient permissions",
-              "Try with a different username (common ones: ec2-user, ubuntu, admin, root)",
-              "The server might be using a different Linux distribution than expected"
-            ]
-          });
-        }
+//         if (commandErrors === totalCommands) {
+//           return res.status(500).json({
+//             error: 'Failed to execute commands on the server',
+//             metrics,
+//             suggestions: [
+//               "The user account may not have sufficient permissions",
+//               "Try with a different username (common ones: ec2-user, ubuntu, admin, root)",
+//               "The server might be using a different Linux distribution than expected"
+//             ]
+//           });
+//         }
 
-        res.json({ metrics });
-      }
-    };
+//         // after metrics are ready and before res.json({ metrics });
+// try {
+//   const serverId = req.body.serverId ? parseInt(req.body.serverId, 10) : null;
+//   if (serverId && req.user) {
+//     // Ensure server belongs to user
+//     const ownerRes = await require('./db').query('SELECT id FROM servers WHERE id=$1 AND user_id=$2', [serverId, req.user.userId]);
+//     if (ownerRes.rowCount === 1) {
+//       // Prepare values for insert
+//       const m = metrics;
+//       await require('./db').query(
+//         `INSERT INTO metrics_history
+//           (server_id, cpu, mem_total, mem_used, mem_free, mem_usage_percent, disk_filesystem, disk_size, disk_used, disk_available, disk_usage_percent, load1, load5, load15)
+//          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+//         [
+//           serverId,
+//           m.cpu?.usage ?? null,
+//           m.memory?.total ?? null,
+//           m.memory?.used ?? null,
+//           m.memory?.free ?? null,
+//           m.memory?.usagePercent ?? null,
+//           m.disk?.filesystem ?? null,
+//           m.disk?.size ?? null,
+//           m.disk?.used ?? null,
+//           m.disk?.available ?? null,
+//           m.disk?.usagePercent ?? null,
+//           m.load?.load1 ?? null,
+//           m.load?.load5 ?? null,
+//           m.load?.load15 ?? null
+//         ]
+//       );
+//     } else {
+//       console.log('Not saving metrics: server not owned by user or not found');
+//     }
+//   }
+// } catch (e) {
+//   console.error('Error saving metrics to DB:', e);
+// }
+
+//         res.json({ metrics });
+//       }
+//     };
 
     // Collect CPU metrics - using a more compatible command
+    
+  const checkCompletion = () => { completedCommands++; console.log(`Command completed: ${completedCommands}/${totalCommands}`);
+  if (completedCommands === totalCommands) { conn.end(); console.log('All commands completed, closing connection');
+    // Clean up the temporary file
+try {
+  fs.unlinkSync(pemFilePath);
+  console.log('Temporary PEM file removed');
+} catch (e) {
+  console.error('Error removing temp file:', e);
+}
+
+// Prepare the normal response logic
+const sendResponse = () => {
+  if (commandErrors === totalCommands) {
+    return res.status(500).json({
+      error: 'Failed to execute commands on the server',
+      metrics,
+      suggestions: [
+        "The user account may not have sufficient permissions",
+        "Try with a different username (common ones: ec2-user, ubuntu, admin, root)",
+        "The server might be using a different Linux distribution than expected"
+      ]
+    });
+  }
+  return res.json({ metrics });
+};
+
+// If a serverId was provided and user is authenticated, try to save the metrics
+const serverId = req.body?.serverId ? parseInt(req.body.serverId, 10) : null;
+if (serverId && req.user) {
+  // Verify ownership, then insert metrics. Use promise chaining (no top-level await).
+  db.query('SELECT id FROM servers WHERE id=$1 AND user_id=$2', [serverId, req.user.userId])
+    .then((ownerRes) => {
+      if (ownerRes.rowCount === 1) {
+        const m = metrics;
+        return db.query(
+          `INSERT INTO metrics_history
+            (server_id, cpu, mem_total, mem_used, mem_free, mem_usage_percent, disk_filesystem, disk_size, disk_used, disk_available, disk_usage_percent, load1, load5, load15)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [
+            serverId,
+            m.cpu?.usage ?? null,
+            m.memory?.total ?? null,
+            m.memory?.used ?? null,
+            m.memory?.free ?? null,
+            m.memory?.usagePercent ?? null,
+            m.disk?.filesystem ?? null,
+            m.disk?.size ?? null,
+            m.disk?.used ?? null,
+            m.disk?.available ?? null,
+            m.disk?.usagePercent ?? null,
+            m.load?.load1 ?? null,
+            m.load?.load5 ?? null,
+            m.load?.load15 ?? null
+          ]
+        );
+      }
+      // Server not owned or not found — resolve and do not save
+      return Promise.resolve();
+    })
+    .then(() => {
+      // Insert (or skip) finished — send response
+      sendResponse();
+    })
+    .catch((e) => {
+      console.error('Error saving metrics to DB:', e);
+      // On DB error, still send response (do not block)
+      sendResponse();
+    });
+} else {
+  // No serverId or user -> just respond
+  sendResponse();
+}
+} };
+    
     executeCommand("top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'", 'cpu', (output) => {
       const usage = parseFloat(output);
       return { usage: isNaN(usage) ? 0 : usage };
