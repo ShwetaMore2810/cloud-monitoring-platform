@@ -16,8 +16,8 @@ export default function Login() {
     setError(null);
     try {
       const resp = await api.post('/auth/login', { username, password });
-      const { token, user } = resp.data;
-      login(token, user);
+      const { token, user} = resp.data;
+      login(token, user.id);
       navigate('/LandingPage');
     } catch (err) {
       console.error(err);
