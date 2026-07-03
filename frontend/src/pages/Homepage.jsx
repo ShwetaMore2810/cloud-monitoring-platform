@@ -1,7 +1,7 @@
 import { useState, useEffect, useContext } from "react";
 import axios from "axios";
 import api from "../api";
-import Account from "../components/Account.jsx";
+import Account from "./Accounts.jsx";
 import { MetricsContext } from "../context/MetricsContext";
 import { Link } from "react-router-dom";
 

@@ -8,3 +8,27 @@
 body {
   background-color: #000; /* matches the component styles in Homepage */
 }
+
+@theme {
+  --color-neko-bg: #0a0e1a;
+  --color-neko-panel: #111827;
+  --color-neko-panel-2: #0f172a;
+  --color-neko-border: #1f2937;
+  --color-neko-purple: #7c5cfc;
+  --color-neko-purple-light: #a78bfa;
+}
+
+/* optional shadow utility used by cards */
+@layer utilities {
+  .shadow-card {
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  }
+}
+
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  background-color: var(--color-neko-bg);
+}
