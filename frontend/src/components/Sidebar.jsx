@@ -45,7 +45,7 @@ export default function Sidebar() {
             key={label}
             to={path}
             className={({ isActive }) =>
-              `group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              `group flex items-center gap-3 px-3 py-2.5 rounded-lg text-xl font-medium transition-colors ${
                 isActive
                   ? "bg-neko-purple text-white shadow-lg shadow-neko-purple/20"
                   : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
